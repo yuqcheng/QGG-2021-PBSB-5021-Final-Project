@@ -1,0 +1,632 @@
+---
+title: "Project"
+author: "Yuqi Cheng"
+date: "2021/5/13"
+output: 
+  html_document: 
+    toc: yes
+    toc_float: yes
+    toc_depth: 2
+    theme: spacelab
+    number_sections: yes
+  pdf_document:
+    toc: yes
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Background
+
+Recently, a large-scale human genomics resource *Genetic European Variation in Health and Disease* (gEUVADIS) is published.^[Lappalainen, T., et al. Transcriptome and genome sequencing uncovers functional variation in humans. Nature 501, 506-511 (2013).] This research includes samples from 4 different European populations (5 populations total). Each of these individuals was part of the 1000 Genomes project and their genomes were sequenced and analyzed to identify SNP genotypes. 
+
+Here, we are provided parts of the gEUVADIS resources, which is 50,000 of the SNP genotypes for 344 samples from the CEU (Utah residents with European ancestry), FIN (Finns), GBR (British) and, TSI (Toscani) population. Along with the detailed gene and SNP annotation information, we perform a thorough Genome-Wide Association Analysis (GWAS) to these data.
+
+# Loading data & preprocessing
+
+We first load the five datasets and check the format, then convert genotype matrix to $X_a$ matrix and $X_d$ matrix.
+
+The genotype dataset provided contains 0, 1 and 2, represent $A_1 A_1$, $A_1 A_2$ and $A_2 A_2$ respectively. Our mission is to convert this dataset to $X_a$ (-1: minor allele homo, 0: hetero, 1: major allele homo) and $X_d$ (-1: homo, 1, hetero) matrix.
+
+```{r lib, echo=FALSE, warning=FALSE, error=FALSE}
+suppressPackageStartupMessages({
+  library(ggplot2)
+  library(scales)
+  library(dplyr)
+  library(tidyr)
+  library(ggsci)
+  library(reshape)
+  library(gridExtra)
+  library(grid)
+  library(gridExtra)
+})
+```
+
+```{r loaddata, message=FALSE, warning=FALSE, eval=FALSE}
+#Load phenotype data
+pheno <- read.csv("~/R Scripts/QGG/project/phenotypes.csv", header = T, row.names = 1)
+pheno[1:5,]
+
+#Load genotype data
+geno <- read.csv("~/R Scripts/QGG/project/genotypes.csv", header = T, stringsAsFactors = F, row.names = 1)
+dim(geno)
+
+#Load the covar info
+covar <- read.csv("~/R Scripts/QGG/project/covars.csv", header = T, stringsAsFactors = T, row.names = 1)
+covar[1:5,]
+
+#Load the gene info
+gene_info <- read.csv("~/R Scripts/QGG/project/gene_info.csv", header = T, stringsAsFactors = F)
+gene_info[1:5,]
+
+#Load the snp_info
+snp_info <- read.csv("~/R Scripts/QGG/project/SNP_info.csv", header = T, stringsAsFactors = F)
+snp_info[1:5,]
+```
+
+```{r xa_xd, eval=FALSE}
+#define minor allele for each column
+counting <- function(data_col){
+  format_temp <- table(data_col)
+  names_temp <- as.numeric(names(format_temp))
+  counts_temp <- matrix(0, nrow = 3, ncol = 1)
+  
+  for (i in names_temp){
+    counts_temp[i+1, 1] <- format_temp[as.character(i)]
+  }
+
+  min_alle <- which.min(counts_temp[-2, 1])
+  minor_alle <- ifelse(min_alle == 1, 0, 2)
+
+  return(minor_alle)
+}
+
+#define if each cell contains minor allele (ma)
+xa_coding <- function(input, ma){
+  if (input == ma){
+    return(-1)
+  }
+  else {
+    return(ifelse(input == 1, 0, 1))
+  }
+}
+
+#define the xa_matrix dimension
+xa_rows <- nrow(geno)
+xa_cols <- ncol(geno)
+
+xa_matrix <- matrix(0, nrow = xa_rows, ncol = xa_cols)
+
+##creates Xa matrix using above functions
+for (i in seq(xa_cols)){
+  minor_allele <- counting(geno[, i])
+  xa_matrix[, i] <- mapply(xa_coding, geno[, i], minor_allele)
+}
+
+xa_matrix[1:5, 1:5]
+
+xd_matrix <- 1 - 2*abs(xa_matrix)
+
+#save(pheno, geno, gene_info, snp_info, covar, xa_matrix, xd_matrix, file = 'project.rda')
+```
+
+# Exploratory analysis {.tabset .tabset-fade .tabset-pills}
+
+```{r load, echo=FALSE}
+load('project.rda')
+```
+
+Before starting the downstream analysis, we first do exploratory analysis on our dataset. 
+
+## Missing value test
+
+The missing value is very common among various datasets and may lead to a wrong result if it is not treated reasonably. So we first examine if there were some NA values.
+
+```{r missing}
+pheno_na <- sum(is.na(pheno))
+geno_na <- sum(is.na(geno))
+covar_na <- sum(is.na(covar))
+
+cat('The number of the missing value in phenotype dataset is:',pheno_na, 'in genotype is:',geno_na,'in covars is:',covar_na)
+```
+
+No missing value is detected.
+
+## Descriptive statistics 
+
+It is very important to know the basic statistics and distribution of our data, thus we try to do some descriptive statistics on the 5 genes we used (ERAP2, FAHD1, GFM1, MARCHF7, PEX6).
+
+```{r d1}
+knitr::kable(gene_info)
+```
+
+```{r desstat}
+pheno_summ <- summary(unique(pheno))
+#gene_info
+##ENSG00000164308.12 <- ERAP2
+##ENSG00000124587.9 <- PEX6
+##ENSG00000180185.7 <- FAHD1
+##ENSG00000168827.9 <- GFM1
+##ENSG00000136536.9 <- MARCH7
+
+gene_name <- c('ERAP2', 'PEX6', 'FAHD1', 'GFM1', 'MARCH7')
+
+knitr::kable(pheno_summ, col.names = gene_name)
+```
+
+Then we try to get the detailed information of these 5 genes from NCBI.^[Gene [Internet]. Bethesda (MD): National Library of Medicine (US), National Center for Biotechnology Information; 2004 – [cited 2020 May 12]. Available from: https://www.ncbi.nlm.nih.gov/gene/]
+
+- **ERAP2**
+  - *Function*: This gene encodes a zinc metalloaminopeptidase of the M1 protease family that resides in the endoplasmic reticulum and functions in N-terminal trimming antigenic epitopes for presentation by major histocompatibility complex (MHC) class I molecules.
+  - *Location*: Chromosome 5
+  
+- **PEX6**
+  - *Function*: This gene encodes a member of the AAA (ATPases associated with diverse cellular activities) family of ATPases. 
+  - *Location*: Chromosome 6
+  
+- **FAHD1**
+  - *Function*: This gene encodes fumarylacetoacetate hydrolase domain containing 1.
+  - *Location*: Chromosome 16
+
+- **GFM1**
+  - *Function*: This gene encodes one of the mitochondrial translation elongation factors.
+  - *Location*: Chromosome 3
+  
+- **MARCH7**
+  - *Function*: This gene encodes membrane associated ring-CH-type finger 7.
+  - *Location*: Chromosome 2
+
+We also look at the format of the `covars` dataset which shows a distribution of the sample population and gender. 
+
+```{r d2}
+population <- as.character(unique(covar$Population))
+
+for (i in population){
+  info_temp <- summary(covar[which(covar$Population == i),]$Sex)
+  cat(i, 'has male sample:',info_temp[2], 'and female sample:',info_temp[1], '. Total:',sum(info_temp),'\n')
+}
+```
+
+To make it clear, we show the popluation information here, 
+
+|**Abbr.**|**Population**|**Description**                                                         |
+|:------:|:------------:|:--------------------------------------------------------------------:|
+|  GBR   |  British     | British                                     |
+|  CEU   | CEPH       | Utah residents with European ancestry |
+|  FIN   |  Finnish     | Finnish                                                  |
+|  TSI   |  Toscani     | Toscani                                                 |
+
+## Minor allele frequency
+
+We then calculate the distribution of the minor allele frequency which is critical for the eQTL analysis. The histogram below shows the distribution of the minor allele frequency. We set the threshold at 0.05 and remove the SNP which maf<0.05.
+
+```{r maf, error=FALSE, warning=FALSE,fig.width = 8, fig.asp = .4}
+#calculate minor allele frequency
+maf <- as.data.frame(apply(xa_matrix, 2, function(x)sum(x == -1)))
+colnames(maf) <- "Frequency"
+
+#calculate percentage and make histogram
+maf_percentage <- as.data.frame(maf / dim(xa_matrix)[1])
+colnames(maf_percentage) <- "Percent"
+
+hist(maf_percentage$Percent, main = 'Minor Allele Percentage', xlab = 'Percentage')
+
+threshold <- 0.05
+cut_index <- which(maf_percentage < threshold)
+xa_matrix_new <- xa_matrix[, -cut_index]
+xd_matrix_new <- xd_matrix[, -cut_index]
+
+cat('Dimension of the matrix (trimmed) is:',dim(xa_matrix_new))
+```
+
+## Principal components analysis
+
+In order to know more about our data, We use trimmed $X_a$ matrix to run PCA and obtain the figure below. From the PCA plot, we can find that CEU and GBR have a near distance, which may indicate that Utah residents with European ancestry population and British poplutaion have a more similar genetic pattern (or we can say a kind of relationship). However, with the result shown in the right panel, we can say that gender is not a factor to distinguish the human genetics resource.
+
+Meanwhile, we also test the effect of our preprocessing. We firstly perform a PCA without removing SNPs whose MAF fell below the 0.05 threshold, and the clustering result is much spread out. Then we run PCA with the trimmed data, after removing SNPs with low MAFs, the clusters are much more confined (See the figure below). The result indicates the importance of preprocessing the data to remove SNPs with low MAFs.
+
+```{r pca, fig.width = 8, fig.asp = .4}
+#pca
+##untrimmed:
+##pca <- prcomp(xa_matrix %*% t(xa_matrix))
+
+#trimmed
+pca <- prcomp(xa_matrix_new %*% t(xa_matrix_new))
+
+#turn prcomp result to dataframe
+pca_result <- as.data.frame(cbind(pca$x[, 1], pca$x[, 2]))
+colnames(pca_result) <- c('PC_1', 'PC_2')
+pca_result$id <- rownames(geno)
+pca_result <- merge(pca_result, covar, by.x = 'id', by.y = 0)
+
+##
+sample_id <- colnames(pheno)
+sample_id <- unlist(lapply(sample_id, function(x) gene_info$symbol[which(gene_info$probe == x)]))
+
+temp <- pheno
+colnames(temp) <- sample_id
+pca_result <- cbind(pca_result, temp)
+
+p1 <- ggplot(pca_result, aes(x = PC_1, y = PC_2)) + geom_point(aes(color = Population))
+p1 <- p1 + scale_color_nejm() + theme_bw()
+
+p2 <- ggplot(pca_result, aes(x = PC_1, y = PC_2)) + geom_point(aes(color = Sex))
+p2 <- p2 + scale_color_nejm() + theme_bw()
+
+grid.arrange(p1, p2, ncol=2)
+```
+
+# Genome-wide association studies with covariates {.tabset .tabset-fade .tabset-pills}
+
+After completing the descriptive analysis, we have obtained the general insight of our data. Here, we start using our trimmed data to do GWAS with covariates. Different from what we used in the lab, we apply the R base function `lm()` to calculate the p-value. To make our analysis more comprehensive, we try GWAS with different covariates, including no covariate, single covariate, and combined covariate.
+
+For each of our tests, we generate a Manhattan plot and QQ-plot, the Manhattan plot is to visualize the significant SNP site and the QQ plot is to make sure that the significant SNP can be considered as potential causal polymorphisms.
+
+## GWAS with no covariate
+
+Firstly, we try GWAS without any covariates, we only use $X_a$ matrix and $X_d$ matrix as the varibles to do linear regression. We use `lm()` to run the regression and `pf()` to do F test. 
+
+```{r p1, message=FALSE, warning=FALSE, fig.width = 8, fig.asp = .4}
+#Basic function to find p-value
+pval.test <- function(y, x){
+  
+  #set variable names for x
+  var <- paste("X", seq(length(x)), sep = "")
+  
+  #assign value
+  for (n in seq(length(x))){
+    assign(var[n], x[[n]])
+  }
+  
+  lm_df <- data.frame(y)
+  lm_df[as.character(var)] <- mget(var)
+  colnames(lm_df)[1] <- 'Y'
+  
+  #set model
+  f <- as.formula(paste('Y',paste(var, collapse = " + "),sep = "~"))
+  model <- eval(bquote(lm(.(f), data = lm_df)))
+  
+  #F test
+  fstats <- summary(model)$fstatistic
+  pval <- pf(fstats[1],fstats[2],fstats[3],lower.tail=FALSE)
+  
+  #return pvalue
+  return(pval)
+}
+
+#p-value adjust function (Bonferroni method)
+p_adj <- function(p_value){
+  #adjust p
+  p.adj <- apply(p_value, 2, p.adjust, method = "bonferroni") %>% as.data.frame()
+  
+  #change format
+  p_changed.adj <- p.adj %>% melt()
+  p_changed.adj <- as.data.frame(p_changed.adj)
+  colnames(p_changed.adj) <- c("gene_id", "value")
+  p_changed.adj$snp <- rep(rownames(p.adj), 5)
+  p_changed.adj$rel_pos <- rep(seq(n_cols_new), 5)
+  p_changed.adj <- merge(p_changed.adj, gene_info[,c(1,5)], by.x = 'gene_id', by.y = 'probe')
+  p_changed.adj <- merge(p_changed.adj, snp_info, by.x = c("snp"), by.y = c("id"))
+  p_changed.adj <- p_changed.adj[order(p_changed.adj$gene_id, p_changed.adj$rel_pos), ]
+  p_changed.adj$pval_adj_log10 <- -log10(p_changed.adj$value)
+  
+  return(p_changed.adj)
+}
+
+n_cols_new <- dim(xa_matrix_new)[2]
+
+#calculate p
+p_no_covar <- matrix(NA, nrow = n_cols_new, ncol = length(pheno), dimnames = list(colnames(geno[, -cut_index]), colnames(pheno)))
+
+for (j in seq(length(pheno))){
+  for (i in seq(n_cols_new)){
+    p_no_covar[i,j] <- pval.test(pheno[, j], list(xa_matrix_new[, i],xd_matrix_new[, i]))
+  }
+}
+
+#calculate adjusted-p
+pval_nc.adj <- p_adj(p_no_covar)
+
+#Manhattan Plot
+p1 <- ggplot(pval_nc.adj, aes(x = rel_pos, y=pval_adj_log10)) + 
+  geom_point(aes(color = symbol)) + 
+  ylab("Bonferroni-adjusted p (-log10)") +
+  xlab("SNP site") +
+  ggtitle('No covairate') +
+  theme_bw() +
+  scale_color_nejm()
+
+#QQplot
+p_no_covar_log10 <- as.data.frame(-log10(p_no_covar))
+colnames(p_no_covar_log10) <- sample_id
+pval_nc_log10 <- p_no_covar_log10 %>% melt()
+colnames(pval_nc_log10) <- c("symbol", "value")
+
+p2 <- ggplot(pval_nc_log10, aes(sample = value)) +
+  stat_qq() +
+  facet_wrap(~symbol, scales = "free") + 
+  stat_qq_line(col=2) + 
+  scale_color_nejm() +
+  theme_bw() +
+  theme(axis.title=element_blank())
+
+grid.arrange(p1, p2, ncol=2)
+```
+
+From the Manhattan plot, we can find that ERAP2, FAHD1, and PEX6 genes have potential sites of causal polymorphisms, however, GFM1 and MARCHF7 genes do not show significant potential sites. Based on the Bonferroni method, the number of potential causal polymorphisms of each gene is:
+
+```{r p1_result}
+#detailed info of the significant causal SNP
+p_adjusted <- apply(p_no_covar, 2, p.adjust, method = "bonferroni") %>% as.data.frame()
+
+for (i in seq(5)){
+  num <- sum(p_adjusted[, i]<0.05)
+  gene_n <- gene_info$symbol[which(gene_info$probe == colnames(p_adjusted)[i])]
+  cat(gene_n, 'has',num,'potential signficant polymorphisms.\n')
+}
+```
+
+## GWAS with Sex as a covariate
+
+Then we add Sex as a covariate and follow the same pipeline with no covariate GWAS. 
+
+```{r sex,message=FALSE, warning=FALSE, fig.width = 8, fig.asp = .4}
+#function for GWAS with covariate
+pval.1cor <- function(y, x){
+  
+  #set variable names for x
+  var <- paste("X", seq(length(x)), sep = "")
+  
+  #assign value
+  for (n in seq(length(x))){
+    assign(var[n], x[[n]])
+  }
+  
+  lm_df <- data.frame(y)
+  lm_df[as.character(var)] <- mget(var)
+  colnames(lm_df)[1] <- 'Y'
+  
+  #set model
+  f <- as.formula(paste('Y',paste(var, collapse = " + "),sep = "~"))
+  model <- eval(bquote(lm(.(f), data = lm_df)))
+  
+  #F test
+  fstats <- summary(model)$fstatistic
+  pval <- pf(fstats[1],fstats[2],fstats[3],lower.tail=FALSE)
+  pval_coeff <- summary(model)$coefficients[2:(1+length(var)), 4]
+  
+  #return pvalue
+  return(list(pval, pval_coeff))
+}
+
+#calculate p
+n_cols_new <- dim(xa_matrix_new)[2]
+
+p_sex <- matrix(NA, nrow = n_cols_new, ncol = length(pheno), dimnames = list(colnames(geno[, -cut_index]), colnames(pheno)))
+
+p_sex_coeff <- matrix(NA, nrow = n_cols_new, ncol = length(pheno), dimnames = list(colnames(geno[, -cut_index]), colnames(pheno)))
+
+for (j in seq(length(pheno))){
+  for (i in seq(n_cols_new)){
+    sex_test <- pval.1cor(pheno[, j], list(xa_matrix_new[, i],xd_matrix_new[, i],covar$Sex))
+    p_sex[i,j] <- sex_test[[1]]
+    p_sex_coeff[i,j] <- sex_test[[2]][3]  
+    }
+}
+
+#calculate adjusted p
+pval_sex.adj <- p_adj(p_sex)
+
+#Manhattan Plot
+p1 <- ggplot(pval_sex.adj, aes(x = rel_pos, y=pval_adj_log10)) + 
+  geom_point(aes(color = symbol)) + 
+  ylab("Bonferroni-adjusted p (-log10)") +
+  xlab("SNP site") + 
+  ggtitle('Sex as covairate') + 
+  theme_bw() +
+  scale_color_nejm()
+
+#QQplot
+p_sex_log10 <- as.data.frame(-log10(p_sex))
+colnames(p_sex_log10) <- sample_id
+p_sex_log10 <- p_sex_log10 %>% melt()
+colnames(p_sex_log10) <- c("symbol", "value")
+
+p2 <- ggplot(p_sex_log10, aes(sample = value)) +
+  stat_qq() +
+  facet_wrap(~symbol, scales = "free") + 
+  stat_qq_line(col=2) + 
+  scale_color_nejm() +
+  theme_bw() +
+  theme(axis.title=element_blank())
+
+grid.arrange(p1, p2, ncol=2)
+```
+
+Same with what we get in section 4.1, we can find that ERAP2, FAHD1, and PEX6 genes have potential sites of causal polymorphisms, however, GFM1 and MARCHF7 genes do not show significant potential sites. Based on the Bonferroni method, the number of potential causal polymorphisms of each gene is:
+
+```{r sex_result}
+p_adjusted <- apply(p_sex, 2, p.adjust, method = "bonferroni") %>% as.data.frame()
+
+for (i in seq(5)){
+  num <- sum(p_adjusted[, i]<0.05)
+  gene_n <- gene_info$symbol[which(gene_info$probe == colnames(p_adjusted)[i])]
+  cat(gene_n, 'has',num,'potential signficant polymorphisms.\n')
+}
+```
+
+## GWAS with Population as a covariate
+
+Following the multiple linear regression with population as a covariate and with multiple hypothesis correction via the Bonferroni method, we can find that ERAP2, FAHD1, and PEX6 genes have potential sites of causal polymorphisms, however, GFM1 and MARCHF7 genes do not show significant potential sites.
+
+```{r population,message=FALSE, warning=FALSE, fig.width = 8, fig.asp = .4}
+#use 4.2 function directly
+##calculate p value
+p_population <- matrix(NA, nrow = n_cols_new, ncol = length(pheno), dimnames = list(colnames(geno[, -cut_index]), colnames(pheno)))
+
+p_population_coeff <- matrix(NA, nrow = n_cols_new, ncol = length(pheno), dimnames = list(colnames(geno[, -cut_index]), colnames(pheno)))
+
+for (j in seq(length(pheno))){
+  for (i in seq(n_cols_new)){
+    pop_test <- pval.1cor(pheno[, j], list(xa_matrix_new[, i],xd_matrix_new[, i], covar$Population))
+    p_population[i,j] <- pop_test[[1]]
+    p_population_coeff[i,j] <- pop_test[[2]][3]  
+    }
+}
+
+#calculate adjusted p
+pval_pop.adj <- p_adj(p_population)
+
+#Manhattan Plot
+p1 <- ggplot(pval_pop.adj, aes(x = rel_pos, y=pval_adj_log10)) + 
+  geom_point(aes(color = symbol)) + 
+  ylab("Bonferroni-adjusted p (-log10)") +
+  xlab("SNP site") + 
+  ggtitle('Sex and Population as covairates') + 
+  theme_bw() +
+  scale_color_nejm()
+
+#QQplot
+p_pop_log10 <- as.data.frame(-log10(p_population))
+colnames(p_pop_log10) <- sample_id
+p_pop_log10 <- p_pop_log10 %>% melt()
+colnames(p_pop_log10) <- c("symbol", "value")
+
+p2 <- ggplot(p_pop_log10, aes(sample = value)) +
+  stat_qq() +
+  facet_wrap(~symbol, scales = "free") + 
+  stat_qq_line(col=2) + 
+  scale_color_nejm() +
+  theme_bw() +
+  theme(axis.title=element_blank())
+
+grid.arrange(p1, p2, ncol=2)
+```
+
+
+```{r pop_result}
+p_adjusted <- apply(p_population, 2, p.adjust, method = "bonferroni") %>% as.data.frame()
+
+for (i in seq(5)){
+  num <- sum(p_adjusted[, i]<0.05)
+  gene_n <- gene_info$symbol[which(gene_info$probe == colnames(p_adjusted)[i])]
+  cat(gene_n, 'has',num,'potential signficant polymorphisms.\n')
+}
+```
+
+## GWAS with Sex and Population as covariates
+
+After testing the 1 covariate situation, we choose Sex and Population togethor as covariates to do the  multiple linear regression and multiple hypothesis correction (Bonferroni method). 
+
+```{r 2covar,message=FALSE, warning=FALSE, fig.width = 8, fig.asp = .4}
+#use 4.2 function directly
+##calculate p value
+p_sex_pop <- matrix(NA, nrow = n_cols_new, ncol = length(pheno), dimnames = list(colnames(geno[, -cut_index]), colnames(pheno)))
+
+p_sex_coeff <- matrix(NA, nrow = n_cols_new, ncol = length(pheno), dimnames = list(colnames(geno[, -cut_index]), colnames(pheno)))
+
+p_pop_coeff <- matrix(NA, nrow = n_cols_new, ncol = length(pheno), dimnames = list(colnames(geno[, -cut_index]), colnames(pheno)))
+
+for (j in seq(length(pheno))){
+  for (i in seq(n_cols_new)){
+    sex_pop_test <- pval.1cor(pheno[, j], list(xa_matrix_new[, i],xd_matrix_new[, i], covar$Sex, covar$Population))
+    p_sex_pop[i,j] <- sex_pop_test[[1]]
+    p_sex_coeff[i,j] <- sex_pop_test[[2]][3] 
+    p_pop_coeff[i,j] <- sex_pop_test[[2]][4]
+    }
+}
+
+#calculate adjusted p
+pval_sex_pop.adj <- p_adj(p_sex_pop)
+
+#Manhattan Plot
+p1 <- ggplot(pval_sex_pop.adj, aes(x = rel_pos, y=pval_adj_log10)) + 
+  geom_point(aes(color = symbol)) + 
+  ylab("Bonferroni-adjusted p (-log10)") +
+  xlab("SNP site") + 
+  ggtitle('Population as covairate') + 
+  theme_bw() +
+  scale_color_nejm()
+
+#QQplot
+p_sex_pop_log10 <- as.data.frame(-log10(p_sex_pop))
+colnames(p_sex_pop_log10) <- sample_id
+p_sex_pop_log10 <- p_sex_pop_log10 %>% melt()
+colnames(p_sex_pop_log10) <- c("symbol", "value")
+
+p2 <- ggplot(p_sex_pop_log10, aes(sample = value)) +
+  stat_qq() +
+  facet_wrap(~symbol, scales = "free") + 
+  stat_qq_line(col=2) + 
+  scale_color_nejm() +
+  theme_bw() +
+  theme(axis.title=element_blank())
+
+grid.arrange(p1, p2, ncol=2)
+```
+
+```{r sex_pop_result}
+p_adjusted <- apply(p_sex_pop, 2, p.adjust, method = "bonferroni") %>% as.data.frame()
+
+for (i in seq(5)){
+  num <- sum(p_adjusted[, i]<0.05)
+  gene_n <- gene_info$symbol[which(gene_info$probe == colnames(p_adjusted)[i])]
+  cat(gene_n, 'has',num,'potential signficant polymorphisms.\n')
+}
+```
+
+The QQ plots above confirm that the significant SNP sites detected for ERAP2, FAHD1, and PEX6 can be interpreted as potentially causal polymorphisms. We can see from the QQ plots of ERAP2, FAHD1 and PEX6, most of the p-values follow a uniform distribution (on the red line) and do not deviate from this line until the end. In contrast,however, the QQ-plots for GFM1 and MARCHF7 show fewer significant p-values than would normally be expected, which is corresponding with the result no significant causal polymorphisms found for either GFM1 or MARCHF7.
+
+To further understand the exact location of the potential causal polymorphisms, we draw the distribution of the causal polymorphisms based on their location on the chromosome. We use the information from `SNP_info.csv` to locate the SNPs and also use the information from `gene_info.csv` to show the gene border.
+
+Not all potential causal polymorphisms locate in the target gene regions, which may indicate that there has a linkage disequilibrium effect. The causal polymorphisms affect the target gene by affecting its linked gene directly. For example, for ERAP2, there might be a linked gene (nearby or regulatory-related) that is in linkage disequilibrium with the ERAP2 gene. The same situation also happens with FAHD1 and PEX6, we should pay more attention to their linked gene when we try to do analysis on these genes, especially their nearby genes and regulatory network.
+
+```{r l,message=FALSE, warning=FALSE, fig.width = 8, fig.asp = .4}
+snp_info_new <- snp_info[-cut_index, ]
+erap2 <- which(sample_id == "ERAP2")
+erap2_list_sex_pop <- which(p_adjusted[, erap2] < 0.05)
+
+fahd1 <- which(sample_id == "FAHD1")
+fahd1_list_sex_pop <- which(p_adjusted[, fahd1] < 0.05)
+
+pex6 <- which(sample_id == "PEX6")
+pex6_list_sex_pop <- which(p_adjusted[, pex6] < 0.05)
+
+positions <- c(snp_info_new$position[erap2_list_sex_pop], snp_info_new$position[fahd1_list_sex_pop],
+               snp_info_new$position[pex6_list_sex_pop], 96875939, 96919716,  1827224, 1840207, 42963865, 42980224)
+pval <- c(p_adjusted[erap2_list_sex_pop, erap2], p_adjusted[fahd1_list_sex_pop, fahd1], p_adjusted[pex6_list_sex_pop, pex6],c(10^-90, 10^-90, 10^-40, 10^-40, 10^-90, 10^-90))
+symbols <- c(rep("ERAP2", length(erap2_list_sex_pop)), rep("FAHD1", length(fahd1_list_sex_pop)), rep("PEX6", length(pex6_list_sex_pop)), rep("ERAP2", 2), rep("FAHD1", 2), rep("PEX6", 2))
+sources <- c(rep("eQTL", length(symbols)-6), rep("Gene Border", 6))
+location <- data.frame(positions = positions,
+                          pval = pval,
+                          symbols = symbols,
+                          sources = sources)
+location$pval_log10 <- -log10(as.numeric(location$pval))
+
+ggplot(location, aes(x=positions, y=pval_log10)) +
+  geom_point(aes(color = sources)) +
+  geom_segment(aes(x=positions, xend=positions, y=0, yend=pval_log10)) +
+  facet_wrap(~symbols, scales = "free") +
+  ylab("-log10(p-value)") +
+  scale_color_nejm() +
+  theme_bw() +
+  theme(legend.position="bottom", axis.text.x = element_text(angle = 90))
+```
+
+# Summary
+
+In this project, we practice a completed GWAS with a covariates analysis pipeline. We first convert the raw data (genotypes) to $X_a$ and $X_d$ matrix before starting the analysis. In order to know more about our data, we then conduct the exploratory analysis (missing value test, descriptive statistics, MAF filter, and PCA). To limit the influence of the NA value, the dataset should be tested if there are many missing values, so we use `is.na` function to do this. Then we run the descriptive analysis on our datasets, we mainly use `summary` and `unique` functions to do the analysis. From the descriptive statistics, we obtain a basic insight into what our data can give us and how do we use our data. To prepare for the downstream analysis, we do MAF filtering to remove the SNP which maf<0.05 because MAFs that are too low result in a reduction in the statistical power of the test. Finally, PCA is applied to illustrates the importance of pre-processing the data to remove SNPs with low MAFs and show the potential effect of the covariates factors.
+
+Then we conducted GWAS with covariates. We divide our analysis into three parts: No covariates, with 1 covariates and with 2 covariates. We have seperately shown the figures in our report. Our analysis shows that ERAP2, FAHD1, and PEX6 genes have potential sites of causal polymorphisms, however, GFM1 and MARCHF7 genes do not show significant potential sites. 
+
+In general, the inclusion of covariates is associated with a reduction in the observation of false positive causal polymorphisms. In our analysis, however, we find more potential causal polymorphisms are added into the ERAP2 gene when we apply GWAS with 2 covariates, which may indicates that we need to pay more attention on the false positive causal SNPs when we do research on ERAP2. 
+
+For FAHD1, the inclusion of sex as a covariate eliminate a single significant causal polymorphism (from 45 to 44). This did not apply when both sex and population are used as covariates. This result may shows that the causal polymorphisms do not have much false positive.
+
+For PEX1, it shows a normal reaction to the inclusion of more covariates. The number of the causal polymorphisms decrease from 29 to 26.
+
+In the end, we try to draw the distribution of the causal polymorphisms based on their location on the chromosome. We find that not all potential causal polymorphisms locate in the target gene regions, which may indicate that there has a linkage disequilibrium effect. The causal polymorphisms affect the target gene by affecting its linked gene directly.
+
+
+
